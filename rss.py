@@ -2,62 +2,68 @@ import os
 import sys
 import feedparser
 from sql import db
-from time import sleep, time
 from dotenv import load_dotenv
-from pyrogram import Client, filters
+from pyrogram import Client
 from pyrogram.errors import FloodWait
-from apscheduler.schedulers.background import BackgroundScheduler
-
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import asyncio
 
 if os.path.exists("config.env"):
     load_dotenv("config.env")
 
-
 try:
-    api_id = int(os.environ.get("API_ID"))   # Get it from my.telegram.org
-    api_hash = os.environ.get("API_HASH")   # Get it from my.telegram.org
-    feed_urls = list(set(i for i in os.environ.get("FEED_URLS").split("|")))  # RSS Feed URL of the site.
-    bot_token = os.environ.get("BOT_TOKEN")   # Get it by creating a bot on https://t.me/botfather
-    log_channel = int(os.environ.get("LOG_CHANNEL"))   # Telegram Channel ID where the bot is added and have write permission. You can use group ID too.
-    check_interval = int(os.environ.get("INTERVAL", 10))   # Check Interval in seconds.  
-    max_instances = int(os.environ.get("MAX_INSTANCES", 3))   # Max parallel instance to be used.
+    api_id = int(os.environ.get("API_ID"))
+    api_hash = os.environ.get("API_HASH")
+    feed_urls = list(set(os.environ.get("FEED_URLS").split("|")))
+    bot_token = os.environ.get("BOT_TOKEN")
+    log_channel = int(os.environ.get("LOG_CHANNEL"))
+    check_interval = int(os.environ.get("INTERVAL", 10))
+    max_instances = int(os.environ.get("MAX_INSTANCES", 3))
 except Exception as e:
     print(e)
     print("One or more variables missing. Exiting !")
     sys.exit(1)
 
-
 for feed_url in feed_urls:
-    if db.get_link(feed_url) == None:
+    if db.get_link(feed_url) is None:
         db.update_link(feed_url, "*")
 
-
-app = Client(":memory:", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
-
-
-def create_feed_checker(feed_url):
-    def check_feed():
-        FEED = feedparser.parse(feed_url)
-        entry = FEED.entries[0]
-        if entry.id != db.get_link(feed_url).link:
-                       # ↓ Edit this message as your needs.
-            message = f"**{entry.title}**\n```{entry.link}```"
-            try:
-                app.send_message(log_channel, message)
-                db.update_link(feed_url, entry.id)
-            except FloodWait as e:
-                print(f"FloodWait: {e.x} seconds")
-                sleep(e.x)
-            except Exception as e:
-                print(e)
-        else:
-            print(f"Checked RSS FEED: {entry.id}")
-    return check_feed
+app = Client("rss_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
 
 
-scheduler = BackgroundScheduler()
-for feed_url in feed_urls:
-    feed_checker = create_feed_checker(feed_url)
-    scheduler.add_job(feed_checker, "interval", seconds=check_interval, max_instances=max_instances)
-scheduler.start()
-app.run()
+async def check_feed(feed_url):
+    FEED = feedparser.parse(feed_url)
+    entry = FEED.entries[0]
+
+    if entry.id != db.get_link(feed_url).link:
+        message = f"**{entry.title}**\n```{entry.link}```"
+        try:
+            await app.send_message(log_channel, message)
+            db.update_link(feed_url, entry.id)
+        except FloodWait as e:
+            print(f"FloodWait: {e.value} seconds")
+            await asyncio.sleep(e.value)
+        except Exception as e:
+            print(e)
+    else:
+        print(f"Checked RSS FEED: {entry.id}")
+
+
+async def main():
+    scheduler = AsyncIOScheduler()
+    for feed_url in feed_urls:
+        scheduler.add_job(
+            check_feed,
+            "interval",
+            seconds=check_interval,
+            max_instances=max_instances,
+            args=[feed_url],
+        )
+    scheduler.start()
+    await app.start()
+    print("Bot Started...")
+    await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
